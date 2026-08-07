@@ -1,0 +1,566 @@
+---
+title: "STAT6 / CRSwNP Receptor & Signaling Analysis"
+subtitle: "Type 1/2 Receptor Expression, Ligand Expression, Cell-Cell Communication,
+  and Downstream STAT6 Readouts"
+date: "2026-07"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  root.dir = "~/project/results_nofilter_gene/integration_harmony/",
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.width = 8, fig.height = 5, fig.align = "center", fig.pos = "H"
+)
+
+fig_dir <- "~/project/results_nofilter_gene/integration_harmony/STAT6/"
+
+.libPaths("~/R/intern")
+options(future.globals.maxSize = 2 * 1024^3)  # 2 GB
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(harmony)
+library(patchwork)
+library(tidyverse)
+library(Nebulosa)
+theme_set(theme_bw(base_size = 11))
+```
+
+# Overview
+
+This document implements the analysis plan addressing four questions:
+
+1. Which cell types express Type 1 (IL4R + IL2RG) vs Type 2 (IL4R + IL13RA1) receptors, and are there differences across conditions (Control / CRSsNP_Eth / CRSwNP_Eth / CRSwNP_NP)?
+2. Which cell types express the ligands IL4 and IL13, and are there differences across conditions?
+3. What can we say about cell-cell communication for IL4/IL13 signaling in CRSwNP vs Control/CRSsNP?
+4. Which cell types express downstream pSTAT6 readouts (CCL17, CCL26, etc.), and is there a global increase in CRSwNP?
+
+# Data Input
+
+```{r}
+obj <- readRDS('~/project/results_nofilter_gene/integration_harmony/GSE235711_CRS_annotated_seurat_obj.rds')
+c('IL4R', 'IL2RG', 'IL13RA1') %in% row.names(obj)
+```
+
+\newpage
+
+# Type 1 vs Type 2 Receptor Expression
+
+```{r}
+expr <- GetAssayData(
+  obj,
+  assay = "RNA",
+  slot = "data"
+)[c("IL4R", "IL2RG", "IL13RA1"), ]
+
+# Create dataframe
+df <- data.frame(
+  condition = obj$condition2,
+  sample_id = obj$sample_id,
+  #celltype = obj$celltype3,
+  celltype = obj$celltype,
+  IL4R = as.numeric(expr["IL4R", ]),
+  IL2RG = as.numeric(expr["IL2RG", ]),
+  IL13RA1 = as.numeric(expr["IL13RA1", ])
+)
+
+# Average expression per sample and cell type
+df <- df %>%
+  group_by(condition, celltype, sample_id) %>%
+  summarise(
+    IL4R = mean(IL4R),
+    IL2RG = mean(IL2RG),
+    IL13RA1 = mean(IL13RA1),
+    n_cells = n(),
+    .groups = "drop"
+  )
+
+summary_df <- df %>%
+  group_by(celltype) %>%
+  summarise(min_IL4R = min(IL4R), median_IL4R = median(IL4R),
+            min_IL2RG = min(IL2RG), median_IL2RG = median(IL2RG),
+            min_IL13RA1 = min(IL13RA1), median_IL13RA1 = median(IL13RA1))
+
+df <- df %>% left_join(summary_df, by = "celltype")
+```
+
+## Co-expression by cell type
+
+```{r}
+ggplot(df, aes(x = IL4R, y = IL2RG)) +
+  geom_point(
+    aes(
+      size = (log10(n_cells)),
+      color = condition
+    ),
+    alpha = 0.8
+  ) +
+  facet_wrap(~celltype, scales = "free_y") +
+  scale_size_area(max_size = 5, name = "log10(Number of cells)") +
+  labs(
+    x = "Mean Log-normalized IL4R expression",
+    y = "Mean Log-normalized mean IL2RG expression",
+    color = "Condition"
+  ) +
+  theme_bw()+
+  coord_cartesian(ylim = c(0, 1))
+```
+
+```{r}
+ggplot(df, aes(x = IL4R, y = IL13RA1)) +
+  geom_point(
+    aes(
+      size = log10(n_cells),
+      color = condition
+    ),
+    alpha = 0.8
+  ) +
+  facet_wrap(~celltype, scales = "free_y") +
+  scale_size_area(max_size = 5, name = "log10(Number of cells)")+
+  labs(
+    x = "Mean Log-normalized IL4R expression",
+    y = "Mean Log-normalized mean IL13RA1 expression",
+    color = "Condition"
+  ) +
+  coord_cartesian(ylim = c(0, 1))+
+  theme_bw()
+```
+
+
+```{r}
+my_cols <- c(
+  "#fb6f92", "#c095e4", "#008585", "#ffa600", "#43b0f1",
+  "#a96b6c", "#ffca3a", "#92ba92", "#ff6361", "#eac4d5"
+)
+
+
+global_IL4R_mean   <- mean(expr["IL4R", ])
+global_IL2RG_mean <- mean(expr["IL2RG", ])
+global_IL13RA1_mean <- mean(expr["IL13RA1", ])
+
+
+p1 <- ggplot(
+  bubble_df,
+  aes(
+    IL4R,
+    IL2RG,
+    size = log10(n_cells),
+    color = celltype
+  )
+) +
+  geom_vline(
+    xintercept = global_IL4R_mean,
+    linetype = "dashed",
+    color = "blue"
+  ) +
+  geom_hline(
+    yintercept = global_IL2RG_mean,
+    linetype = "dashed",
+    color = "blue"
+  ) +
+  geom_point(alpha = 0.9) +
+  geom_text(
+    aes(label = celltype),
+    color = "black",
+    size = 3.5,
+    vjust = -0.5,
+    check_overlap = TRUE,
+    show.legend = FALSE
+  ) +
+  scale_size_continuous(
+    range = c(3, 8),
+    name = "log10(Cell count)"
+  ) +
+  scale_x_continuous(
+    expand = expansion(mult = c(0.15, 0.05))
+  ) +
+  scale_color_manual(values = my_cols) +
+  guides(color = "none") +
+  theme_classic() +
+  labs(
+    x = "Mean IL4R expression",
+    y = "Mean IL2RG expression"
+  )
+
+p2 <- ggplot(
+  bubble_df,
+  aes(
+    IL4R,
+    IL13RA1,
+    size = log10(n_cells),
+    color = celltype
+  )
+) +
+  geom_vline(
+    xintercept = global_IL4R_mean,
+    linetype = "dashed",
+    color = "blue"
+  ) +
+  geom_hline(
+    yintercept = global_IL13RA1_mean,
+    linetype = "dashed",
+    color = "blue"
+  ) +
+  geom_point(alpha = 0.9) +
+  geom_text(
+    aes(label = celltype),
+    color = "black",
+    size = 3.5,
+    vjust = -0.5,
+    check_overlap = TRUE,
+    show.legend = FALSE
+  ) +
+  scale_size_continuous(
+    range = c(3, 8),
+    name = "log10(Cell count)"
+  ) +
+  scale_x_continuous(
+    expand = expansion(mult = c(0.15, 0.05))
+  ) +
+  scale_color_manual(values = my_cols) +
+  guides(color = "none") +
+  theme_classic() +
+  labs(
+    x = "Mean IL4R expression",
+    y = "Mean IL13RA1 expression"
+  )
+
+print(p1)
+print(p2)
+```
+
+
+## "IL4R", "IL2RG", "IL13RA1" Dotplot, FeaturePlot & Density Plot
+```{r}
+DotPlot(
+  object = obj,
+  features = c("STAT6", "IL4R", "IL2RG", "IL13RA1"),
+  group.by = "celltype3",
+  scale = F)
+
+FeaturePlot(obj, 
+            reduction = "umap.harmony",
+            features = c("STAT6", "IL4R", "IL2RG", "IL13RA1")
+)
+```
+
+```{r}
+p <- Nebulosa::plot_density(
+    obj,
+    features = "STAT6",
+    reduction = "umap.harmony"
+)
+p$labels$colour <- "Density"
+p +
+  theme_classic() +
+  theme(
+    panel.grid = element_blank(),
+    axis.line = element_line(color = "grey60"),
+    axis.text = element_text(color = "black"),
+    axis.title = element_text(color = "black")
+  )
+
+```
+
+```{r}
+p <- Nebulosa::plot_density(
+    obj,
+    reduction = "umap.harmony",
+    "IL4R"
+)
+p$labels$colour <- "Density"
+p
+```
+
+```{r}
+p <- Nebulosa::plot_density(
+    obj,
+    reduction = "umap.harmony",
+    "IL2RG"
+)
+p$labels$colour <- "Density"
+p
+```
+
+```{r}
+p <- Nebulosa::plot_density(
+    obj,
+    reduction = "umap.harmony",
+    "IL13RA1"
+)
+p$labels$colour <- "Density"
+p
+```
+
+## Double-positive proportions by cell type
+```{r}
+expr <- FetchData(obj, vars = c('IL4R', 'IL2RG', 'IL13RA1', 'celltype3', 'condition2', 'sample_id'), slot = 'data')
+expr %>%
+  group_by(celltype3) %>%
+  summarise(
+    pct_type1_pos = mean(IL4R > 0 & IL2RG > 0) * 100,
+    pct_type2_pos = mean(IL4R > 0 & IL13RA1 > 0) * 100,
+    n_cells = n()
+  )
+```
+
+## Type 1 receptor double-positive heatmap
+
+```{r}
+receptor_summary <- expr %>%
+  group_by(celltype3, condition2) %>%
+  summarise(
+    pct_type1_pos = mean(IL4R > 0 & IL2RG > 0) * 100,
+    pct_type2_pos = mean(IL4R > 0 & IL13RA1 > 0) * 100,
+    n_cells = n()
+  )
+```
+
+```{r}
+ggplot(receptor_summary, aes(x = condition2, y = celltype3, fill = pct_type1_pos)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(pct_type1_pos, 1)), size = 3) +
+  scale_fill_gradient(low = "white", high = "darkred", name = "% double+\n(Type 1)") +
+  labs(title = "Type 1 Receptor (IL4R+IL2RG) Double-Positive %", x = "", y = "")
+```
+
+```{r}
+ggplot(receptor_summary, aes(x = condition2, y = celltype3, fill = pct_type2_pos)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(pct_type2_pos, 1)), size = 3) +
+  scale_fill_gradient(low = "white", high = "darkred", name = "% double+\n(Type 2)") +
+  labs(title = "Type 2 Receptor (IL4R+IL13RA1) Double-Positive %", x = "", y = "")
+```
+
+## Sample-level comparison across conditions
+
+```{r}
+sample_level <- expr %>%
+  group_by(celltype3, condition2, sample_id) %>%
+  summarise(
+    pct_type1_pos = mean(IL4R > 0 & IL2RG > 0) * 100,
+    pct_type2_pos = mean(IL4R > 0 & IL13RA1 > 0) * 100,
+    n_cells = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n_cells >= 20)
+```
+
+```{r}
+ggplot(sample_level, aes(x = condition2, y = pct_type1_pos, color = condition2)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.3) +
+  geom_jitter(width = 0.15, size = 1.8) +
+  #facet_wrap(~celltype3, scales = "free_y", ncol = 4) +
+  facet_wrap(~celltype3, ncol = 4) +
+  labs(y = "% IL4R+IL2RG double-positive cells", x = "") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+        strip.text = element_text(size = 7))
+```
+
+```{r}
+ggplot(sample_level, aes(x = condition2, y = pct_type2_pos, color = condition2)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.3) +
+  geom_jitter(width = 0.15, size = 1.8) +
+  facet_wrap(~celltype3, ncol = 4) +
+  labs(y = "% IL4R+IL13RA1 double-positive cells", x = "") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+        strip.text = element_text(size = 7))
+```
+
+\newpage
+
+# Ligand (IL4/IL13) Expression
+
+```{r}
+expr <- FetchData(obj, vars = c('IL4', 'IL13', 'celltype3', 'condition2', 'sample_id'), slot = 'data')
+ligand_summary <- expr %>%
+  group_by(celltype3, condition2) %>%
+  summarise(
+    pct_IL4_pos  = mean(IL4  > 0) * 100,
+    pct_IL13_pos = mean(IL13 > 0) * 100,
+    mean_IL4  = mean(IL4),
+    mean_IL13 = mean(IL13),
+    .groups = "drop"
+  )
+ligand_summary
+```
+
+## DotPlot-style ligand expression by cell type and condition
+
+```{r}
+dotplot_df <- ligand_summary %>%
+  select(celltype3, condition2, pct_IL4_pos, pct_IL13_pos, mean_IL4, mean_IL13) %>%
+  pivot_longer(cols = c(pct_IL4_pos, pct_IL13_pos, mean_IL4, mean_IL13),
+                names_to = "key", values_to = "value") %>%
+  mutate(gene = ifelse(grepl("IL4$|IL4_", key), "IL4", "IL13"),
+          metric = ifelse(grepl("^pct", key), "pct_pos", "mean_expr")) %>%
+  select(-key) %>%
+  pivot_wider(names_from = metric, values_from = value)
+
+ggplot(dotplot_df, aes(x = gene, y = celltype3, size = pct_pos, color = mean_expr)) +
+  geom_point() +
+  facet_wrap(~condition2, nrow = 1) +
+  scale_size_continuous(range = c(0, 8), name = "% expressing") +
+  scale_color_gradient(low = "lightgrey", high = "darkblue", name = "Mean expr.") +
+  labs(title = "IL4/IL13 Ligand Expression Across Cell Types and Conditions", x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 0))
+
+# Desired order (top to bottom)
+celltype_order <- c(
+  "MCT",
+  "MCT_CTSG",
+  "MCTC",
+  "Mono_Macro",
+  "Monocytes",
+  "Macrophages",
+  "pDCs",
+  "Neutrophil",
+  "T/NK cells",
+  "B cells",
+  "Plasma cells",
+  "Fibroblasts",
+  "Endothelial cells",
+  "Epithelial cells"
+)
+
+dotplot_df$celltype <- factor(
+  dotplot_df$celltype3,
+  levels = rev(celltype_order)  # reverse because ggplot draws first level at bottom
+)
+ggplot(dotplot_df, aes(x = condition2, y = celltype, size = pct_pos, color = mean_expr)) +
+  geom_point() +
+  facet_wrap(~gene, nrow = 1) +
+  scale_size_continuous(range = c(0, 8), name = "% expressing") +
+  scale_color_gradient(low = "lightgrey", high = "darkblue", name = "Mean expr.") +
+  labs(title = "IL4/IL13 Ligand Expression Across Cell Types and Conditions", x = "", y = "") +
+  theme(axis.text.x = element_text(
+    angle = 45,
+    hjust = 1,
+    vjust = 1
+))
+```
+
+\newpage
+
+# Downstream STAT6 Readouts (CCL17, CCL26, AMICA1, GATA3)
+
+## Pseudobulk CCL17 expression by condition
+
+```{r}
+c('CCL17', 'CCL26', 'AMICA1', 'GATA3', 'STAT6') %in% rownames(obj)
+# 'AMICA1' not find in this dataset
+expr <- FetchData(obj, vars = c('CCL17', 'CCL26', 'GATA3', 'STAT6', 'celltype3', 'condition2', 'sample_id'), slot = 'data')
+pseudobulk <- expr %>%
+  group_by(sample_id, condition2) %>%
+  summarise(STAT6 = mean(STAT6),
+            CCL17 = mean(CCL17), 
+            CCL26 = mean(CCL26), 
+            GATA3 = mean(GATA3), 
+            .groups = "drop")
+pseudobulk_long <- pseudobulk %>%
+  pivot_longer(
+    cols = c(STAT6, CCL17, CCL26, GATA3),
+    names_to = "gene",
+    values_to = "expression"
+  )
+pseudobulk_long$gene <- factor(
+  pseudobulk_long$gene,
+  levels = c("STAT6", "CCL17", "CCL26", "GATA3")
+)
+
+ggplot(pseudobulk_long,
+       aes(x = condition2, y = expression, color = condition2)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.3) +
+  geom_jitter(width = 0.15, size = 3) +
+  #facet_wrap(~gene, scales = "free_y", nrow = 1) +
+  facet_wrap(~gene, nrow = 1) +
+  labs(
+    title = "",
+    x = "",
+    y = "Mean log-normalized expression"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+## STAT6/CCL17/CCL26/GATA3 by cell type and condition (DotPlot-style)
+
+```{r}
+target_summary <- expr %>%
+  group_by(celltype3, condition2) %>%
+  summarise(
+    pct_STAT6 = mean(STAT6 > 0) * 100, mean_STAT6 = mean(STAT6),
+    pct_CCL17 = mean(CCL17 > 0) * 100, mean_CCL17 = mean(CCL17),
+    pct_CCL26 = mean(CCL26 > 0) * 100, mean_CCL26 = mean(CCL26),
+    pct_GATA3 = mean(GATA3 > 0) * 100, mean_GATA3 = mean(GATA3),
+    .groups = "drop"
+  )
+
+target_summary$celltype3 <- factor(
+  target_summary$celltype3,
+  levels = rev(celltype_order)  # reverse because ggplot draws first level at bottom
+)
+
+dotplot_df2 <- target_summary %>%
+  pivot_longer(
+    -c(celltype3, condition2),
+    names_to = "key",
+    values_to = "value"
+  ) %>%
+  mutate(
+    gene = sub("^(pct|mean)_", "", key),
+    metric = ifelse(grepl("^pct_", key), "pct_pos", "mean_expr")
+  ) %>%
+  select(-key) %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  )
+
+dotplot_df2$gene <- factor(
+  dotplot_df2$gene,
+  levels = c("STAT6", "CCL17", "CCL26", "GATA3")
+)
+
+ggplot(
+  dotplot_df2,
+  aes(
+    x = condition2,
+    y = celltype3,
+    size = pct_pos,
+    color = mean_expr
+  )
+) +
+  geom_point() +
+  facet_wrap(~gene, nrow = 1) +
+  scale_size_continuous(
+    range = c(0, 8),
+    name = "% expressing"
+  ) +
+  scale_color_gradient(
+    low = "lightgrey",
+    high = "darkblue",
+    name = "Mean expr."
+  ) +
+  labs(
+    title = "STAT6 and STAT6-Related Downstream Genes Expression",
+    x = "",
+    y = ""
+  )+
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    )
+  )
+```
